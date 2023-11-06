@@ -6,7 +6,7 @@ def prediction_output_to_trajectories(prediction_output_dict,
                                       max_h,
                                       ph,
                                       map=None,
-                                      prune_ph_to_future=False):
+                                      prune_ph_to_future=True, reconstruction=False):
 
     prediction_timesteps = prediction_output_dict.keys()
 
@@ -25,10 +25,17 @@ def prediction_output_to_trajectories(prediction_output_dict,
 
             history = node.get(np.array([t - max_h, t]), position_state)  # History includes current pos
             history = history[~np.isnan(history.sum(axis=1))]
+            
+            if reconstruction:
+                future = node.get(np.array([t + 1 - max_h, t + ph - max_h]), position_state)
+            else:
+                future = node.get(np.array([t + 1, t + ph]), position_state)
+#             future_copy = future
 
-            future = node.get(np.array([t + 1, t + ph]), position_state)
             future = future[~np.isnan(future.sum(axis=1))]
-
+#             if future.shape[0] < ph:
+#                 print(future_copy)
+#                 exit()
             if prune_ph_to_future:
                 predictions_output = predictions_output[:, :, :future.shape[0]]
                 if predictions_output.shape[2] == 0:

@@ -69,6 +69,18 @@ parser.add_argument('--augment',
                     help="Whether to augment the scene during training",
                     action='store_true')
 
+parser.add_argument('--reconstruction',
+                    help="Whether to out observations in addition to prediction",
+                    action='store_true')
+
+parser.add_argument('--history_head',
+                    help="add history reconstruction as additional task",
+                    action='store_true')
+
+parser.add_argument('--traversal',
+                    help="Whether to out observations in addition to prediction",
+                    action='store_true')
+
 parser.add_argument('--node_freq_mult_train',
                     help="Whether to use frequency multiplying of nodes during training",
                     action='store_true')

@@ -149,19 +149,19 @@ if __name__ == "__main__":
                                                                                 ph,
                                                                                 prune_ph_to_future=False)
 
-                eval_road_viols_batch = []
-                for t in prediction_dict.keys():
-                    for node in prediction_dict[t].keys():
-                        if node.type == args.node_type:
-                            viols = compute_road_violations(prediction_dict[t][node],
-                                                            scene.map[args.node_type],
-                                                            channel=0)
-                            if viols == 2000:
-                                viols = 0
+#                 eval_road_viols_batch = []
+#                 for t in prediction_dict.keys():
+#                     for node in prediction_dict[t].keys():
+#                         if node.type == args.node_type:
+#                             viols = compute_road_violations(prediction_dict[t][node],
+#                                                             scene.map[args.node_type],
+#                                                             channel=0)
+#                             if viols == 2000:
+#                                 viols = 0
 
-                            eval_road_viols_batch.append(viols)
+#                             eval_road_viols_batch.append(viols)
 
-                eval_road_viols = np.hstack((eval_road_viols, eval_road_viols_batch))
+#                 eval_road_viols = np.hstack((eval_road_viols, eval_road_viols_batch))
 
                 batch_error_dict = evaluation.compute_batch_statistics(predictions,
                                                                        scene.dt,

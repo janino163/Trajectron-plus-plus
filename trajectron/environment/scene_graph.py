@@ -215,6 +215,9 @@ class TemporalSceneGraph(object):
         higher_t = np.clip(t + t_fut + 1, a_min=None, a_max=self.adj_cube.shape[0] + 1)
         adj_mat = np.max(self.adj_cube[lower_t:higher_t], axis=0)
         weight_mat = np.max(self.weight_cube[lower_t:higher_t], axis=0)
+#         print(f'lower_t: {lower_t}, higher_t: {higher_t}')
+#         print(adj_mat)
+#         exit()
         return SceneGraph(self.edge_radius,
                           self.nodes,
                           adj_mat,

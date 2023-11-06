@@ -62,8 +62,8 @@ def compute_batch_statistics(prediction_output_dict,
                              kde=True,
                              obs=False,
                              map=None,
-                             prune_ph_to_future=False,
-                             best_of=False):
+                             prune_ph_to_future=True,
+                             best_of=False,reconstruction=False):
 
     (prediction_dict,
      _,
@@ -71,7 +71,7 @@ def compute_batch_statistics(prediction_output_dict,
                                                        dt,
                                                        max_hl,
                                                        ph,
-                                                       prune_ph_to_future=prune_ph_to_future)
+                                                       prune_ph_to_future=prune_ph_to_future, reconstruction=reconstruction)
 
     batch_error_dict = dict()
     for node_type in node_type_enum:

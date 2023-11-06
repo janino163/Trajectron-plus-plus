@@ -48,7 +48,7 @@ def plot_trajectories(ax,
                     future[:, 1],
                     'w--',
                     path_effects=[pe.Stroke(linewidth=edge_width, foreground='k'), pe.Normal()])
-
+            
             # Current Node Position
             circle = plt.Circle((history[-1, 0],
                                  history[-1, 1]),

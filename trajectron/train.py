@@ -18,6 +18,8 @@ from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
 from model.dataset import EnvironmentDataset, collate
 from tensorboardX import SummaryWriter
+import os.path as osp
+import json
 # torch.autograd.set_detect_anomaly(True)
 
 if not torch.cuda.is_available() or args.device == 'cpu':
@@ -45,6 +47,20 @@ if args.seed is not None:
         torch.cuda.manual_seed_all(args.seed)
 
 
+def expand_matches(matches):
+    result = dict()
+    match_keys = list(matches.keys())
+    for match_key in match_keys:
+        scenes = matches[match_key]
+        for i, scene in enumerate(scenes):
+            result[scene] = scenes[:i] + scenes[i+1:]
+    return result
+
+# def get_traversal_nodes(matched_scene_names, scenes):
+#     for scene in scenes:
+#         if scene.name in matched_scene_names:
+            
+
 def main():
     # Load hyperparameters from json
     if not os.path.exists(args.conf):
@@ -71,7 +87,17 @@ def main():
     hyperparams['use_map_encoding'] = args.map_encoding
     hyperparams['augment'] = args.augment
     hyperparams['override_attention_radius'] = args.override_attention_radius
-
+    hyperparams['reconstruction'] = args.reconstruction
+    hyperparams['traversal'] = args.traversal
+    hyperparams['history_head'] = args.history_head
+    if hyperparams['reconstruction']:
+        hyperparams['prediction_horizon'] = hyperparams['prediction_horizon']+hyperparams['maximum_history_length']
+        
+    match_path = "/share/campbell/lyft/info"
+    file_path = osp.join(match_path, 'matched_scenes.json')
+    matches = json.load(open(file_path))
+    matches = expand_matches(matches)
+    hyperparams['matches'] = matches
     print('-----------------------')
     print('| TRAINING PARAMETERS |')
     print('-----------------------')
@@ -120,16 +146,16 @@ def main():
 
     train_scenes = train_env.scenes
     train_scenes_sample_probs = train_env.scenes_freq_mult_prop if args.scene_freq_mult_train else None
-
+    
     train_dataset = EnvironmentDataset(train_env,
-                                       hyperparams['state'],
-                                       hyperparams['pred_state'],
-                                       scene_freq_mult=hyperparams['scene_freq_mult_train'],
-                                       node_freq_mult=hyperparams['node_freq_mult_train'],
-                                       hyperparams=hyperparams,
-                                       min_history_timesteps=hyperparams['minimum_history_length'],
-                                       min_future_timesteps=hyperparams['prediction_horizon'],
-                                       return_robot=not args.incl_robot_node)
+                                   hyperparams['state'],
+                                   hyperparams['pred_state'],
+                                   scene_freq_mult=hyperparams['scene_freq_mult_train'],
+                                   node_freq_mult=hyperparams['node_freq_mult_train'],
+                                   hyperparams=hyperparams,
+                                   min_history_timesteps=hyperparams['minimum_history_length'],
+                                   min_future_timesteps=hyperparams['prediction_horizon'],
+                                   return_robot=not args.incl_robot_node)
     train_data_loader = dict()
     for node_type_data_set in train_dataset:
         if len(node_type_data_set) == 0:
@@ -163,7 +189,7 @@ def main():
 
         eval_scenes = eval_env.scenes
         eval_scenes_sample_probs = eval_env.scenes_freq_mult_prop if args.scene_freq_mult_eval else None
-
+        
         eval_dataset = EnvironmentDataset(eval_env,
                                           hyperparams['state'],
                                           hyperparams['pred_state'],
@@ -190,18 +216,45 @@ def main():
 
     # Offline Calculate Scene Graph
     if hyperparams['offline_scene_graph'] == 'yes':
-        print(f"Offline calculating scene graphs")
-        for i, scene in enumerate(train_scenes):
-            scene.calculate_scene_graph(train_env.attention_radius,
-                                        hyperparams['edge_addition_filter'],
-                                        hyperparams['edge_removal_filter'])
-            print(f"Created Scene Graph for Training Scene {i}")
+        
+        if hyperparams['traversal']:
+            print(f"Offline calculating scene traversal graphs")
+#             match_path = "/share/campbell/lyft/info"
+#             file_path = osp.join(match_path, 'matched_scenes.json')
+#             matches = json.load(open(file_path))
+#             matches = expand_matches(matches)
+            
+            for i, scene in enumerate(train_scenes):
+                matched_scene_names = matches[scene.name]
+                matched_scenes = [s for s in train_scenes if s.name in matched_scene_names]
+                scene.calculate_traversal_scene_graph(train_env.attention_radius,
+                                            hyperparams['edge_addition_filter'],
+                                            hyperparams['edge_removal_filter'], 
+                                            matched_scenes)
+                print(f"Created Scene Traversal Graph for Training Scene {i}")
 
-        for i, scene in enumerate(eval_scenes):
-            scene.calculate_scene_graph(eval_env.attention_radius,
-                                        hyperparams['edge_addition_filter'],
-                                        hyperparams['edge_removal_filter'])
-            print(f"Created Scene Graph for Evaluation Scene {i}")
+            for i, scene in enumerate(eval_scenes):
+                matched_scene_names = matches[scene.name]
+                matched_scenes = [s for s in eval_scenes if s.name in matched_scene_names]
+                scene.calculate_traversal_scene_graph(eval_env.attention_radius,
+                                            hyperparams['edge_addition_filter'],
+                                            hyperparams['edge_removal_filter'],
+                                            matched_scenes)
+                print(f"Created Scene Traversal Graph for Evaluation Scene {i}")
+                
+        else:
+            print(f"Offline calculating scene graphs")
+            for i, scene in enumerate(train_scenes):
+                scene.calculate_scene_graph(train_env.attention_radius,
+                                            hyperparams['edge_addition_filter'],
+                                            hyperparams['edge_removal_filter'])
+                print(f"Created Scene Graph for Training Scene {i}")
+
+            for i, scene in enumerate(eval_scenes):
+                scene.calculate_scene_graph(eval_env.attention_radius,
+                                            hyperparams['edge_addition_filter'],
+                                            hyperparams['edge_removal_filter'])
+                print(f"Created Scene Graph for Evaluation Scene {i}")
 
     model_registrar = ModelRegistrar(model_dir, args.device)
 
@@ -265,7 +318,7 @@ def main():
 
                 if not args.debug:
                     log_writer.add_scalar(f"{node_type}/train/learning_rate",
-                                          lr_scheduler[node_type].get_lr()[0],
+                                          lr_scheduler[node_type].get_last_lr()[0],
                                           curr_iter)
                     log_writer.add_scalar(f"{node_type}/train/loss", train_loss, curr_iter)
 
@@ -396,7 +449,7 @@ def main():
                                                                                  max_hl=max_hl,
                                                                                  ph=ph,
                                                                                  node_type_enum=eval_env.NodeType,
-                                                                                 map=scene.map))
+                                                                                 map=scene.map,reconstruction=hyperparams['reconstruction']))
 
                 evaluation.log_batch_errors(eval_batch_errors,
                                             log_writer,

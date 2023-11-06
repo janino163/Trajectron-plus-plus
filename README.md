@@ -21,14 +21,16 @@ git submodule update # Fetching all of the data from the submodules at the speci
 ### Environment Setup ###
 First, we'll create a conda environment to hold the dependencies.
 ```
-conda create --name trajectron++ python=3.6 -y
-source activate trajectron++
+conda create -n trajectron++ python=3.7 -y
+conda activate trajectron++
+conda install pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch
 pip install -r requirements.txt
+pip install -U lyft_dataset_sdk
 ```
 
 Then, since this project uses IPython notebooks, we'll install this conda environment as a kernel.
 ```
-python -m ipykernel install --user --name trajectronpp --display-name "Python 3.6 (Trajectron++)"
+python -m ipykernel install --user --name trajectronpp --display-name "Python 3.8 (Trajectron++)"
 ```
 
 ### Data Setup ###

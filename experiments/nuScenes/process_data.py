@@ -240,7 +240,8 @@ def process_scene(ns_scene, env, nusc, data_path):
 
     data.sort_values('frame_id', inplace=True)
     max_timesteps = data['frame_id'].max()
-
+    print(data['frame_id'])
+    exit()
     x_min = np.round(data['x'].min() - 50)
     x_max = np.round(data['x'].max() + 50)
     y_min = np.round(data['y'].min() - 50)
@@ -248,7 +249,7 @@ def process_scene(ns_scene, env, nusc, data_path):
 
     data['x'] = data['x'] - x_min
     data['y'] = data['y'] - y_min
-
+    
     scene = Scene(timesteps=max_timesteps + 1, dt=dt, name=str(scene_id), aug_func=augment)
 
     # Generate Maps

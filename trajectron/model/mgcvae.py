@@ -192,9 +192,9 @@ class MultimodalGenerativeCVAE(object):
         self.add_submodule(self.node_type + '/hxy_to_z',
                            model_if_absent=nn.Linear(hxy_size, self.latent.z_dim))
 
-        ####################
-        #   Decoder LSTM   #
-        ####################
+        ########################
+        # Future Decoder LSTM #
+        #######################
         if self.hyperparams['incl_robot_node']:
             decoder_input_dims = self.pred_state_length + self.robot_state_length + z_size + x_size
         else:
@@ -209,9 +209,9 @@ class MultimodalGenerativeCVAE(object):
         self.add_submodule(self.node_type + '/decoder/initial_h',
                            model_if_absent=nn.Linear(z_size + x_size, self.hyperparams['dec_rnn_dim']))
 
-        ###################
-        #   Decoder GMM   #
-        ###################
+        ######################
+        # Future Decoder GMM #
+        ######################
         self.add_submodule(self.node_type + '/decoder/proj_to_GMM_log_pis',
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
                                                      self.hyperparams['GMM_components']))
@@ -227,6 +227,31 @@ class MultimodalGenerativeCVAE(object):
 
         self.x_size = x_size
         self.z_size = z_size
+        
+        ########################
+        # Reconstruction Decoder LSTM #
+        #######################
+        self.add_submodule(self.node_type + '/decoder_reconstruction/rnn_cell',
+                           model_if_absent=nn.GRUCell(decoder_input_dims, self.hyperparams['dec_rnn_dim']))
+
+        self.add_submodule(self.node_type + '/decoder_reconstruction/state_action',
+                           model_if_absent=nn.Sequential(
+                               nn.Linear(self.state_length, self.pred_state_length)))
+        
+        self.add_submodule(self.node_type + '/decoder_reconstruction/proj_to_GMM_log_pis',
+                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
+                                                     self.hyperparams['GMM_components']))
+        self.add_submodule(self.node_type + '/decoder_reconstruction/proj_to_GMM_mus',
+                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
+                                                     self.hyperparams['GMM_components'] * self.pred_state_length))
+        self.add_submodule(self.node_type + '/decoder_reconstruction/proj_to_GMM_log_sigmas',
+                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
+                                                     self.hyperparams['GMM_components'] * self.pred_state_length))
+        self.add_submodule(self.node_type + '/decoder_reconstruction/proj_to_GMM_corrs',
+                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
+                                                     self.hyperparams['GMM_components']))
+
+
 
     def create_edge_models(self, edge_types):
         for edge_type in edge_types:
@@ -775,6 +800,23 @@ class MultimodalGenerativeCVAE(object):
         log_sigmas = self.node_modules[self.node_type + '/decoder/proj_to_GMM_log_sigmas'](tensor)
         corrs = torch.tanh(self.node_modules[self.node_type + '/decoder/proj_to_GMM_corrs'](tensor))
         return log_pis, mus, log_sigmas, corrs
+    def project_to_GMM_params_reconstruction(self, tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor):
+        """
+        Projects tensor to parameters of a GMM with N components and D dimensions.
+
+        :param tensor: Input tensor.
+        :return: tuple(log_pis, mus, log_sigmas, corrs)
+            WHERE
+            - log_pis: Weight (logarithm) of each GMM component. [N]
+            - mus: Mean of each GMM component. [N, D]
+            - log_sigmas: Standard Deviation (logarithm) of each GMM component. [N, D]
+            - corrs: Correlation between the GMM components. [N]
+        """
+        log_pis = self.node_modules[self.node_type + '/decoder_reconstruction/proj_to_GMM_log_pis'](tensor)
+        mus = self.node_modules[self.node_type + '/decoder_reconstruction/proj_to_GMM_mus'](tensor)
+        log_sigmas = self.node_modules[self.node_type + '/decoder_reconstruction/proj_to_GMM_log_sigmas'](tensor)
+        corrs = torch.tanh(self.node_modules[self.node_type + '/decoder_reconstruction/proj_to_GMM_corrs'](tensor))
+        return log_pis, mus, log_sigmas, corrs
 
     def p_y_xz(self, mode, x, x_nr_t, y_r, n_s_t0, z_stacked, prediction_horizon,
                num_samples, num_components=1, gmm_mode=False):
@@ -947,6 +989,148 @@ class MultimodalGenerativeCVAE(object):
 
         log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
         return log_p_y_xz
+    
+    def reconstruction_decoder(self, mode, x, x_nr_t, y, y_r, n_s_t0, z, labels, prediction_horizon, num_samples):
+        """
+        Decoder of the CVAE.
+
+        :param mode: Mode in which the model is operated. E.g. Train, Eval, Predict.
+        :param x: Input / Condition tensor.
+        :param x: Input / Condition tensor.
+        :param x_nr_t: Joint state of node and robot (if robot is in scene).
+        :param y: Future tensor.
+        :param y_r: Encoded future tensor.
+        :param n_s_t0: Standardized current state of the node.
+        :param z: Stacked latent state.
+        :param prediction_horizon: Number of prediction timesteps.
+        :param num_samples: Number of samples from the latent space.
+        :return: Log probability of y over p.
+        """
+
+        num_components = self.hyperparams['N'] * self.hyperparams['K']
+        
+        y_dist = self.p_y_xz_reconstruction(mode, x, x_nr_t, y_r, n_s_t0, z,
+                             prediction_horizon, num_samples, num_components=num_components)
+        
+        log_p_yt_xz_r = torch.clamp(y_dist.log_prob(labels), max=self.hyperparams['log_p_yt_xz_max'])
+        
+        if self.hyperparams['log_histograms'] and self.log_writer is not None:
+            self.log_writer.add_histogram('%s/%s' % (str(self.node_type), 'log_p_yt_xz_r'), log_p_yt_xz_r, self.curr_iter)
+
+        log_p_y_xz_r = torch.sum(log_p_yt_xz_r, dim=2)
+        return log_p_y_xz_r
+    
+    def p_y_xz_reconstruction(self, mode, x, x_nr_t, y_r, n_s_t0, z_stacked, prediction_horizon,
+               num_samples, num_components=1, gmm_mode=False):
+        r"""
+        .. math:: p_\psi(\mathbf{y}_i \mid \mathbf{x}_i, z)
+
+        :param mode: Mode in which the model is operated. E.g. Train, Eval, Predict.
+        :param x: Input / Condition tensor.
+        :param x_nr_t: Joint state of node and robot (if robot is in scene).
+        :param y: Future tensor.
+        :param y_r: Encoded future tensor.
+        :param n_s_t0: Standardized current state of the node.
+        :param z_stacked: Stacked latent state. [num_samples_z * num_samples_gmm, bs, latent_state]
+        :param prediction_horizon: Number of prediction timesteps.
+        :param num_samples: Number of samples from the latent space.
+        :param num_components: Number of GMM components.
+        :param gmm_mode: If True: The mode of the GMM is sampled.
+        :return: GMM2D. If mode is Predict, also samples from the GMM.
+        """
+        ph = prediction_horizon
+        pred_dim = self.pred_state_length
+#         pred_dim = self.state_length
+
+        z = torch.reshape(z_stacked, (-1, self.latent.z_dim))
+        zx = torch.cat([z, x.repeat(num_samples * num_components, 1)], dim=1)
+
+        cell = self.node_modules[self.node_type + '/decoder_reconstruction/rnn_cell']
+        initial_h_model = self.node_modules[self.node_type + '/decoder/initial_h']
+
+        initial_state = initial_h_model(zx)
+
+        log_pis, mus, log_sigmas, corrs, a_sample = [], [], [], [], []
+
+        # Infer initial action state for node from current state
+        a_0 = self.node_modules[self.node_type + '/decoder_reconstruction/state_action'](n_s_t0)
+        
+
+        state = initial_state
+        if self.hyperparams['incl_robot_node']:
+            input_ = torch.cat([zx,
+                                a_0.repeat(num_samples * num_components, 1),
+                                x_nr_t.repeat(num_samples * num_components, 1)], dim=1)
+        else:
+            input_ = torch.cat([zx, a_0.repeat(num_samples * num_components, 1)], dim=1)
+        
+        # predict backwards
+        for j in range(ph):
+            h_state = cell(input_, state)
+            log_pi_t, mu_t, log_sigma_t, corr_t = self.project_to_GMM_params_reconstruction(h_state)
+
+            gmm = GMM2D(log_pi_t, mu_t, log_sigma_t, corr_t)  # [k;bs, pred_dim]
+
+            if mode == ModeKeys.PREDICT and gmm_mode:
+                a_t = gmm.mode()
+            else:
+                a_t = gmm.rsample()
+
+            if num_components > 1:
+                if mode == ModeKeys.PREDICT:
+                    log_pis.append(self.latent.p_dist.logits.repeat(num_samples, 1, 1))
+                else:
+                    log_pis.append(self.latent.q_dist.logits.repeat(num_samples, 1, 1))
+            else:
+                log_pis.append(
+                    torch.ones_like(corr_t.reshape(num_samples, num_components, -1).permute(0, 2, 1).reshape(-1, 1))
+                )
+
+            mus.append(
+                mu_t.reshape(
+                    num_samples, num_components, -1, 2
+                ).permute(0, 2, 1, 3).reshape(-1, 2 * num_components)
+            )
+            log_sigmas.append(
+                log_sigma_t.reshape(
+                    num_samples, num_components, -1, 2
+                ).permute(0, 2, 1, 3).reshape(-1, 2 * num_components))
+            corrs.append(
+                corr_t.reshape(
+                    num_samples, num_components, -1
+                ).permute(0, 2, 1).reshape(-1, num_components))
+
+            if self.hyperparams['incl_robot_node']:
+                dec_inputs = [zx, a_t, y_r[:, j].repeat(num_samples * num_components, 1)]
+            else:
+                dec_inputs = [zx, a_t]
+            input_ = torch.cat(dec_inputs, dim=1)
+            state = h_state
+
+        log_pis = torch.stack(log_pis, dim=1)
+        mus = torch.stack(mus, dim=1)
+        log_sigmas = torch.stack(log_sigmas, dim=1)
+        corrs = torch.stack(corrs, dim=1)
+
+        a_dist = GMM2D(torch.reshape(log_pis, [num_samples, -1, ph, num_components]),
+                       torch.reshape(mus, [num_samples, -1, ph, num_components * pred_dim]),
+                       torch.reshape(log_sigmas, [num_samples, -1, ph, num_components * pred_dim]),
+                       torch.reshape(corrs, [num_samples, -1, ph, num_components]))
+
+        if self.hyperparams['dynamic'][self.node_type]['distribution']:
+            y_dist = self.dynamic.integrate_distribution(a_dist, x)
+        else:
+            y_dist = a_dist
+
+        if mode == ModeKeys.PREDICT:
+            if gmm_mode:
+                a_sample = a_dist.mode()
+            else:
+                a_sample = a_dist.rsample()
+            sampled_future = self.dynamic.integrate_samples(a_sample, x)
+            return y_dist, sampled_future
+        else:
+            return y_dist
 
     def train_loss(self,
                    inputs,
@@ -993,7 +1177,16 @@ class MultimodalGenerativeCVAE(object):
                                   labels,  # Loss is calculated on unstandardized label
                                   prediction_horizon,
                                   self.hyperparams['k'])
-
+        
+        if self.hyperparams['history_head']:
+            reconstruction_labels = torch.flip(inputs[:, :-1, 0:2], [1]) # [batch, t, state] flip time for reverse prediction
+            log_p_y_xz_r = self.reconstruction_decoder(mode, x, x_nr_t, y, y_r, n_s_t0, z,
+                                      reconstruction_labels,  # Loss is calculated on unstandardized label
+                                      self.hyperparams['minimum_history_length'],
+                                      self.hyperparams['k'])
+            log_p_y_xz_r_mean = torch.mean(log_p_y_xz_r, dim=0)  # [nbs]
+            log_likelihood_r = torch.mean(log_p_y_xz_r_mean)
+        
         log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
         log_likelihood = torch.mean(log_p_y_xz_mean)
 
@@ -1001,6 +1194,9 @@ class MultimodalGenerativeCVAE(object):
         mutual_inf_p = mutual_inf_mc(self.latent.p_dist)
 
         ELBO = log_likelihood - self.kl_weight * kl + 1. * mutual_inf_p
+        if self.hyperparams['history_head']:
+            ELBO = ELBO + log_likelihood_r
+            
         loss = -ELBO
 
         if self.hyperparams['log_histograms'] and self.log_writer is not None:
@@ -1072,13 +1268,23 @@ class MultimodalGenerativeCVAE(object):
         z = self.latent.sample_p(1, mode, full_dist=True)
         y_dist, _ = self.p_y_xz(ModeKeys.PREDICT, x, x_nr_t, y_r, n_s_t0, z,
                                 prediction_horizon, num_samples=1, num_components=num_components)
+        if self.hyperparams['history_head']:
+            reconstruction_labels = torch.flip(inputs[:, :-1, 0:2], [1]) # [batch, t, state] flip time for reverse prediction
+            y_dist_r, _ = self.p_y_xz_reconstruction(ModeKeys.PREDICT, x, x_nr_t, y_r, n_s_t0, z,
+                             self.hyperparams['minimum_history_length'], num_samples=1, num_components=num_components)
+            log_p_yt_xz_r = torch.clamp(y_dist_r.log_prob(reconstruction_labels), max=self.hyperparams['log_p_yt_xz_max'])
+            log_p_y_xz_r = torch.sum(log_p_yt_xz_r, dim=2)
+            log_p_y_xz_mean_r = torch.mean(log_p_y_xz_r, dim=0)  # [nbs]
+            log_likelihood_r = torch.mean(log_p_y_xz_mean_r)
+            
         # We use unstandardized labels to compute the loss
         log_p_yt_xz = torch.clamp(y_dist.log_prob(labels), max=self.hyperparams['log_p_yt_xz_max'])
         log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
         log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
         log_likelihood = torch.mean(log_p_y_xz_mean)
         nll = -log_likelihood
-
+        if self.hyperparams['history_head']:
+            nll = nll - log_likelihood_r
         return nll
 
     def predict(self,
@@ -1141,3 +1347,68 @@ class MultimodalGenerativeCVAE(object):
                                             gmm_mode)
 
         return our_sampled_future
+        
+    def full_predict(self,
+                inputs,
+                inputs_st,
+                first_history_indices,
+                neighbors,
+                neighbors_edge_value,
+                robot,
+                map,
+                prediction_horizon,
+                num_samples,
+                z_mode=False,
+                gmm_mode=False,
+                full_dist=True,
+                all_z_sep=False):
+        """
+        Predicts the future of a batch of nodes.
+
+        :param inputs: Input tensor including the state for each agent over time [bs, t, state].
+        :param inputs_st: Standardized input tensor.
+        :param first_history_indices: First timestep (index) in scene for which data is available for a node [bs]
+        :param neighbors: Preprocessed dict (indexed by edge type) of list of neighbor states over time.
+                            [[bs, t, neighbor state]]
+        :param neighbors_edge_value: Preprocessed edge values for all neighbor nodes [[N]]
+        :param robot: Standardized robot state over time. [bs, t, robot_state]
+        :param map: Tensor of Map information. [bs, channels, x, y]
+        :param prediction_horizon: Number of prediction timesteps.
+        :param num_samples: Number of samples from the latent space.
+        :param z_mode: If True: Select the most likely latent state.
+        :param gmm_mode: If True: The mode of the GMM is sampled.
+        :param all_z_sep: Samples each latent mode individually without merging them into a GMM.
+        :param full_dist: Samples all latent states and merges them into a GMM as output.
+        :return:
+        """
+        mode = ModeKeys.PREDICT
+
+        x, x_nr_t, _, y_r, _, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                   inputs=inputs,
+                                                                   inputs_st=inputs_st,
+                                                                   labels=None,
+                                                                   labels_st=None,
+                                                                   first_history_indices=first_history_indices,
+                                                                   neighbors=neighbors,
+                                                                   neighbors_edge_value=neighbors_edge_value,
+                                                                   robot=robot,
+                                                                   map=map)
+
+        self.latent.p_dist = self.p_z_x(mode, x)
+        z, num_samples, num_components = self.latent.sample_p(num_samples,
+                                                              mode,
+                                                              most_likely_z=z_mode,
+                                                              full_dist=full_dist,
+                                                              all_z_sep=all_z_sep)
+
+        y_dist, sampled_future = self.p_y_xz(mode, x, x_nr_t, y_r, n_s_t0, z,
+                                            prediction_horizon,
+                                            num_samples,
+                                            num_components,
+                                            gmm_mode)
+        if self.hyperparams['history_head']:
+            y_dist_r, sampled_history = self.p_y_xz_reconstruction(mode, x, x_nr_t, y_r, n_s_t0, z,
+                                 self.hyperparams['minimum_history_length'], num_samples=num_samples, num_components=num_components, gmm_mode=gmm_mode)
+            return y_dist, sampled_future, y_dist_r, sampled_history
+        
+        return y_dist, sampled_future

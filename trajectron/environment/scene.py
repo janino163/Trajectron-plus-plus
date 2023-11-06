@@ -5,11 +5,14 @@ from .node import MultiNode
 
 
 class Scene(object):
-    def __init__(self, timesteps, map=None, dt=1, name="", frequency_multiplier=1, aug_func=None,  non_aug_scene=None):
+    def __init__(self, timesteps, map=None, dt=1, name="", frequency_multiplier=1,
+                 aug_func=None, non_aug_scene=None, x_min=None, y_min=None):
         self.map = map
         self.timesteps = timesteps
         self.dt = dt
         self.name = name
+        self.x_min = x_min  # Used to get predictions back into global coordinates.
+        self.y_min = y_min  # Used to get predictions back into global coordinates.
 
         self.nodes = []
 
@@ -23,6 +26,24 @@ class Scene(object):
 
         self.aug_func = aug_func
         self.non_aug_scene = non_aug_scene
+#     def __init__(self, timesteps, map=None, dt=1, name="", frequency_multiplier=1, aug_func=None,  non_aug_scene=None):
+#         self.map = map
+#         self.timesteps = timesteps
+#         self.dt = dt
+#         self.name = name
+
+#         self.nodes = []
+
+#         self.robot = None
+
+#         self.temporal_scene_graph = None
+
+#         self.frequency_multiplier = frequency_multiplier
+
+#         self.description = ""
+
+#         self.aug_func = aug_func
+#         self.non_aug_scene = non_aug_scene
 
     def add_robot_from_nodes(self, robot_type):
         scenes = [self]
@@ -63,6 +84,7 @@ class Scene(object):
         :param edge_removal_filter:  Filter for removing edges (Only online)
         :return: Scene Graph for given timestep.
         """
+        
         if self.temporal_scene_graph is None:
             timestep_range = np.array([timestep - len(edge_removal_filter), timestep])
             node_pos_dict = dict()
@@ -99,6 +121,43 @@ class Scene(object):
         """
         timestep_range = np.array([0, self.timesteps-1])
         node_pos_dict = dict()
+        
+        for node in self.nodes:
+            if type(node) is MultiNode:
+                node_pos_dict[node] = np.squeeze(node.get_all(timestep_range, {'position': ['x', 'y']}))
+            else:
+                node_pos_dict[node] = np.squeeze(node.get(timestep_range, {'position': ['x', 'y']}))
+
+        self.temporal_scene_graph = TemporalSceneGraph.create_from_temp_scene_dict(node_pos_dict,
+                                                                                   attention_radius,
+                                                                                   duration=self.timesteps,
+                                                                                   edge_addition_filter=edge_addition_filter,
+                                                                                   edge_removal_filter=edge_removal_filter)
+    def calculate_traversal_scene_graph(self,
+                              attention_radius,
+                              edge_addition_filter=None,
+                              edge_removal_filter=None, matched_scenes=None) -> None:
+        """
+        Calculate the Temporal Scene Graph for the entire Scene.
+
+        :param attention_radius: Attention radius for each node type permutation.
+        :param edge_addition_filter: Filter for adding edges.
+        :param edge_removal_filter: Filter for removing edges.
+        :return: None
+        """
+        node_pos_dict = dict()
+        # get nodes for matched scenes
+        # todo limit number of traversals as hyperparameter
+        for scene_ in matched_scenes:
+            timestep_range = np.array([0, scene_.timesteps-1])
+            for node in scene_.nodes:
+                if type(node) is MultiNode:
+                    node_pos_dict[node] = np.squeeze(node.get_all(timestep_range, {'position': ['x', 'y']}))
+                else:
+                    node_pos_dict[node] = np.squeeze(node.get(timestep_range, {'position': ['x', 'y']}))
+        
+        timestep_range = np.array([0, self.timesteps-1])
+        
 
         for node in self.nodes:
             if type(node) is MultiNode:
@@ -111,7 +170,7 @@ class Scene(object):
                                                                                    duration=self.timesteps,
                                                                                    edge_addition_filter=edge_addition_filter,
                                                                                    edge_removal_filter=edge_removal_filter)
-
+        
     def duration(self):
         """
         Calculates the duration of the scene.
@@ -146,6 +205,7 @@ class Scene(object):
                 lower_bound = timesteps - min_history_timesteps
                 upper_bound = timesteps + min_future_timesteps
                 mask = (node.first_timestep <= lower_bound) & (upper_bound <= node.last_timestep)
+
                 if mask.any():
                     timestep_indices_present = np.nonzero(mask)[0]
                     for timestep_index_present in timestep_indices_present:

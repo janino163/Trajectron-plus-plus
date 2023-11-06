@@ -4,6 +4,119 @@ import collections.abc
 from torch.utils.data._utils.collate import default_collate
 import dill
 container_abcs = collections.abc
+from scipy.spatial.distance import cdist
+import pandas as pd
+from environment import Scene, Node
+import time
+import copy
+def augment_traversal_node(target_node, scene, t, max_ht):
+    metrix = 'euclidean'
+    data_columns_vehicle = pd.MultiIndex.from_product([['position', 'velocity', 'acceleration', 'heading'], ['x', 'y']])
+    data_columns_vehicle = data_columns_vehicle.append(pd.MultiIndex.from_tuples([('heading', '°'), ('heading', 'd°')]))
+    data_columns_vehicle = data_columns_vehicle.append(pd.MultiIndex.from_product([['velocity', 'acceleration'], ['norm']]))
+    data_columns_pedestrian = pd.MultiIndex.from_product([['position', 'velocity', 'acceleration'], ['x', 'y']])
+    scene_aug = Scene(timesteps=scene.timesteps, dt=scene.dt, name=scene.name, non_aug_scene=scene)
+    
+    target_position = target_node.get(np.array([t]), [('position', 'x'), ('position', 'y')])
+    for node in scene.nodes:
+        if node.type == 'PEDESTRIAN':
+            position = node.get(np.array([0, scene.timesteps]), [('position', 'x'), ('position', 'y')])
+            dist_ = cdist(target_position, position)
+            match_index = np.nanargmin(dist_, axis=None)
+            state_ = [('position', 'x'), ('position', 'y'), ('velocity', 'x'),('velocity', 'y')]
+            state_.append(('acceleration', 'x'))
+            state_.append(('acceleration', 'y'))
+            
+            
+            temp_node_data = node.get(np.array([match_index, node.last_timestep]),state_)
+            
+            
+            x = temp_node_data[:,0]
+            y = temp_node_data[:,1]
+            vx = temp_node_data[:,2]
+            vy = temp_node_data[:,3]
+            ax = temp_node_data[:,4]
+            ay = temp_node_data[:,5]
+            
+            
+            data_dict = {('position', 'x'): x,
+                         ('position', 'y'): y,
+                         ('velocity', 'x'): vx,
+                         ('velocity', 'y'): vy,
+                         ('acceleration', 'x'): ax,
+                         ('acceleration', 'y'): ay}
+            
+            node_data = pd.DataFrame(data_dict, columns=data_columns_pedestrian)
+            first_valid = node_data.first_valid_index()
+            
+            
+            node_data = node_data.iloc[first_valid:]
+            assert first_valid == 0
+            first_timestep = np.clip(t-max_ht,0,124)
+
+            node = Node(node_type=node.type, node_id=node.id, data=node_data, first_timestep=first_timestep)
+        elif node.type == 'VEHICLE':
+#             x = node.data.position.x.copy().reshape((-1,1))
+#             y = node.data.position.y.copy().reshape((-1,1))
+            
+#             position = np.hstack((x, y))
+            position = node.get(np.array([0, scene.timesteps]), [('position', 'x'), ('position', 'y')])
+
+            dist_ = cdist(target_position, position)
+            match_index = np.nanargmin(dist_, axis=None)
+            
+            state_ = [('position', 'x'), ('position', 'y'), ('velocity', 'x'), ('velocity', 'y'), ('velocity', 'norm')]
+            state_.append(('acceleration', 'x'))
+            state_.append(('acceleration', 'y'))
+            state_.append(('acceleration', 'norm'))
+            state_.append(('heading', 'x'))
+            state_.append(('heading', 'y'))
+            state_.append(('heading', '°'))
+            state_.append(('heading', 'd°'))
+#             temp_node_data = node.get(np.array([match_index - max_ht, node.last_timestep]),state_)
+            temp_node_data = node.get(np.array([match_index, node.last_timestep]),state_)
+            
+            
+            x = temp_node_data[:,0]
+            y = temp_node_data[:,1]
+            vx = temp_node_data[:,2]
+            vy = temp_node_data[:,3]
+            v_norm = temp_node_data[:,4]
+            ax = temp_node_data[:,5]
+            ay = temp_node_data[:,6]
+            a_norm = temp_node_data[:,7]
+            heading_x = temp_node_data[:,8]
+            heading_y = temp_node_data[:,9]
+            heading = temp_node_data[:,10]
+            heading_d = temp_node_data[:,11]
+            
+            
+            data_dict = {('position', 'x'): x,
+                         ('position', 'y'): y,
+                         ('velocity', 'x'): vx,
+                         ('velocity', 'y'): vy,
+                         ('velocity', 'norm'): v_norm,
+                         ('acceleration', 'x'): ax,
+                         ('acceleration', 'y'): ay,
+                         ('acceleration', 'norm'): a_norm,
+                         ('heading', 'x'): heading_x,
+                         ('heading', 'y'): heading_y,
+                         ('heading', '°'): heading,
+                         ('heading', 'd°'): heading_d}
+            
+            node_data = pd.DataFrame(data_dict, columns=data_columns_vehicle)
+            node_data_debug = pd.DataFrame(data_dict, columns=data_columns_vehicle)
+            
+            first_valid = node_data.first_valid_index()
+            node_data = node_data.iloc[first_valid:]
+            
+            assert first_valid == 0
+            first_timestep = np.clip(t-max_ht,0,124)
+#             print(f'vel valid: {first_valid}, first: {first_timestep}')
+            node = Node(node_type=node.type, node_id=node.id, data=node_data, first_timestep=first_timestep,
+                    non_aug_node=node)
+        scene_aug.nodes.append(node)
+    return scene_aug
 
 
 def restore(data):
@@ -86,7 +199,11 @@ def get_node_timestep_data(env, scene, t, node, state, pred_state,
 
     # Node
     timestep_range_x = np.array([t - max_ht, t])
-    timestep_range_y = np.array([t + 1, t + max_ft])
+    if hyperparams['reconstruction']:
+        timestep_range_y = np.array([t + 1 - max_ht, t + max_ft-max_ht])
+    else:
+        timestep_range_y = np.array([t + 1, t + max_ft])
+        
 
     x = node.get(timestep_range_x, state[node.type])
     y = node.get(timestep_range_y, pred_state[node.type])
@@ -95,7 +212,12 @@ def get_node_timestep_data(env, scene, t, node, state, pred_state,
     _, std = env.get_standardize_params(state[node.type], node.type)
     std[0:2] = env.attention_radius[(node.type, node.type)]
     rel_state = np.zeros_like(x[0])
-    rel_state[0:2] = np.array(x)[-1, 0:2]
+    
+    if hyperparams['reconstruction']:
+        rel_state[0:2] = np.array(x)[first_history_index, 0:2] # is this correct?
+    else:
+        rel_state[0:2] = np.array(x)[-1, 0:2]
+    
     x_st = env.standardize(x, state[node.type], node.type, mean=rel_state, std=std)
     if list(pred_state[node.type].keys())[0] == 'position':  # If we predict position we do it relative to current pos
         y_st = env.standardize(y, pred_state[node.type], node.type, mean=rel_state[0:2])
@@ -110,9 +232,31 @@ def get_node_timestep_data(env, scene, t, node, state, pred_state,
     # Neighbors
     neighbors_data_st = None
     neighbors_edge_value = None
+    
+    
+
     if hyperparams['edge_encoding']:
+        if hyperparams['traversal']:
+#             start = time.time()
+            traversal_scene = copy.deepcopy(scene)
+            temp_nodes = []
+            temp_nodes.append(node)
+            assert scene_graph is None
+            matched_scene_names = hyperparams['matches'][scene.name]
+            matched_scenes = [s for s in env.scenes if s.name in matched_scene_names]
+            for traversal_scene in matched_scenes:
+                traversal_scene = augment_traversal_node(node, traversal_scene, t, max_ht)
+                temp_nodes.extend(traversal_scene.nodes)
+            traversal_scene.nodes = temp_nodes
+            scene_graph = traversal_scene.get_scene_graph(t,
+                                            env.attention_radius,
+                                            hyperparams['edge_addition_filter'],
+                                            hyperparams['edge_removal_filter']) if scene_graph is None else scene_graph
+#             stop = time.time() # A few seconds later
+#             print(f'sec: {start-stop}, num_nodes: {len(temp_nodes)}')
         # Scene Graph
-        scene_graph = scene.get_scene_graph(t,
+        else:
+            scene_graph = scene.get_scene_graph(t,
                                             env.attention_radius,
                                             hyperparams['edge_addition_filter'],
                                             hyperparams['edge_removal_filter']) if scene_graph is None else scene_graph
@@ -209,19 +353,30 @@ def get_timesteps_data(env, scene, t, node_type, state, pred_state,
     :param hyperparams: Model hyperparameters
     :return:
     """
-    nodes_per_ts = scene.present_nodes(t,
-                                       type=node_type,
-                                       min_history_timesteps=min_ht,
-                                       min_future_timesteps=max_ft,
-                                       return_robot=not hyperparams['incl_robot_node'])
+    if hyperparams['reconstruction']:
+        nodes_per_ts = scene.present_nodes(t,
+                                           type=node_type,
+                                           min_history_timesteps=min_ht,
+                                           min_future_timesteps=max_ft-max_ht,
+                                         return_robot=not hyperparams['incl_robot_node'])
+    else:
+        nodes_per_ts = scene.present_nodes(t,
+                                           type=node_type,
+                                           min_history_timesteps=min_ht,
+                                           min_future_timesteps=max_ft,
+                                           return_robot=not hyperparams['incl_robot_node'])
     batch = list()
     nodes = list()
     out_timesteps = list()
     for timestep in nodes_per_ts.keys():
-            scene_graph = scene.get_scene_graph(timestep,
+            if hyperparams['traversal']:
+                scene_graph = None
+            else:
+                scene_graph = scene.get_scene_graph(timestep,
                                                 env.attention_radius,
                                                 hyperparams['edge_addition_filter'],
                                                 hyperparams['edge_removal_filter'])
+#             scene_graph = None
             present_nodes = nodes_per_ts[timestep]
             for node in present_nodes:
                 nodes.append(node)

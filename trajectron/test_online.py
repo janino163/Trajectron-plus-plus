@@ -107,10 +107,10 @@ def get_maps_for_input(input_dict, scene, hyperparams):
 def main():
     # Choose one of the model directory names under the experiment/*/models folders.
     # Possibilities are 'vel_ee', 'int_ee', 'int_ee_me', or 'robot'
-    model_dir = os.path.join(args.log_dir, 'int_ee')
-
+    model_dir = os.path.join(args.log_dir, 'models_28_Sep_2022_02_34_39prediction_anomaly')
     # Load hyperparameters from json
     config_file = os.path.join(model_dir, args.conf)
+    print(config_file)
     if not os.path.exists(config_file):
         raise ValueError('Config json not found!')
     with open(config_file, 'r') as conf_json:
@@ -170,7 +170,7 @@ def main():
 
     for timestep in range(init_timestep + 1, eval_scene.timesteps):
         input_dict = eval_scene.get_clipped_input_dict(timestep, hyperparams['state'])
-
+        
         maps = None
         if hyperparams['use_map_encoding']:
             maps = get_maps_for_input(input_dict, eval_scene, hyperparams)
@@ -232,6 +232,8 @@ def main():
 
         fig.savefig(os.path.join(output_save_dir, f'pred_{timestep}.pdf'), dpi=300)
         plt.close(fig)
+        
+        fig, ax = plt.subplots()
 
 
 if __name__ == '__main__':

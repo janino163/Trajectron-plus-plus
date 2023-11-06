@@ -223,6 +223,7 @@ class DoubleHeaderNumpyArray(object):
             for h1, h2s in columns.items():
                 for h2 in h2s:
                     data_integer_indices.append(self.double_header_lookup[(h1, h2)])
+            
             return self.data[rows, data_integer_indices]
         elif type(columns) is list:
             for column in columns:
